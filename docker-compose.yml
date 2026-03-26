@@ -1,0 +1,45 @@
+# ============================================================
+# docker-compose.yml  —  Colab Mirror  (GPU + CPU services)
+#
+# GPU runtime:  docker compose up colab-gpu
+# CPU runtime:  docker compose up colab-cpu
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── GPU runtime  (mirrors us-docker.pkg.dev/colab-images/public/runtime)
+  colab-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: colab_mirror:gpu
+    runtime: nvidia                         # requires NVIDIA Container Toolkit
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/workspace/notebooks
+      - ./data:/workspace/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── CPU runtime  (mirrors us-docker.pkg.dev/colab-images/public/cpu-runtime)
+  colab-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: colab_mirror:cpu
+    ports:
+      - "8889:8888"
+    volumes:
+      - ./notebooks:/workspace/notebooks
+      - ./data:/workspace/data

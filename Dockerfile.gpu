@@ -1,0 +1,109 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  Dockerfile.gpu  —  Google Colab GPU Runtime Mirror                      ║
+# ║                                                                           ║
+# ║  Mirrors: us-docker.pkg.dev/colab-images/public/runtime                  ║
+# ║  Base   : CUDA 12.5 + cuDNN 9 on Ubuntu 22.04  (same as Colab)          ║
+# ║  Python : 3.12                                                            ║
+# ║  GPU    : NVIDIA T4 / L4 / A100 (tested by Google)                      ║
+# ║                                                                           ║
+# ║  Build  :  docker build -f Dockerfile.gpu -t colab_mirror:gpu .          ║
+# ║  Run    :  docker run --gpus all -p 8888:8888 \                          ║
+# ║              -v "$PWD/notebooks":/workspace colab_mirror:gpu             ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# Same CUDA version as Colab's current GPU runtime (CUDA 12.5 / cuDNN 9)
+FROM nvidia/cuda:12.5.1-cudnn-devel-ubuntu22.04
+
+LABEL maintainer="colab-mirror"
+LABEL description="Google Colab GPU runtime mirror — us-docker.pkg.dev/colab-images/public/runtime"
+
+# ── Environment ─────────────────────────────────────────────────────────────
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Colab sets this — keeps CUDA libs discoverable
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/lib:$LD_LIBRARY_PATH \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:$PATH
+
+# ── System packages (from Colab apt-list.txt) ───────────────────────────────
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    # Python
+    python3.12 python3.12-dev python3.12-venv python3-pip \
+    # Build tools
+    build-essential cmake ninja-build git curl wget unzip pkg-config \
+    # Audio / multimedia — required for torchaudio .ogg .mp3 .wav
+    ffmpeg libsndfile1 libsndfile1-dev sox libsox-fmt-all \
+    libportaudio2 portaudio19-dev \
+    libavcodec-extra libavformat-dev libavutil-dev \
+    # Numeric / HDF5
+    libhdf5-dev libopenblas-dev liblapack-dev \
+    # OpenCV display / rendering
+    libgl1-mesa-glx libglib2.0-0 libsm6 libxrender1 libxext6 \
+    # SSL / FFI
+    libffi-dev libssl-dev \
+    # OCR
+    tesseract-ocr libtesseract-dev \
+    # GIS / spatial (Colab ships geopandas)
+    libgeos-dev libproj-dev \
+    # Misc
+    locales ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python 3.12 as default ──────────────────────────────────────────────────
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+ && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.12 1 \
+ && python -m pip install --upgrade pip setuptools wheel
+
+# ── Working directory ────────────────────────────────────────────────────────
+WORKDIR /workspace
+COPY . /workspace/colab_env/
+
+# ── Install all packages ─────────────────────────────────────────────────────
+# Step 1: pin numpy BEFORE torch/tf
+RUN pip install "numpy==1.26.4" "scipy==1.15.3" "packaging>=23.1" \
+    "typing-extensions>=4.8" "Cython" "pybind11" "cffi"
+
+# Step 2: PyTorch with CUDA 12.1 wheels (Colab's actual choice on CUDA 12.x)
+RUN pip install \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    torchaudio==2.5.1 \
+    --extra-index-url https://download.pytorch.org/whl/cu121
+
+# Step 3: torchtext + torchcodec
+RUN pip install torchtext==0.18.0 \
+ && pip install torchcodec==0.1.0 \
+    --extra-index-url https://download.pytorch.org/whl/cu121 || true
+
+# Step 4: TensorFlow (exact Colab version)
+RUN pip install \
+    tensorflow==2.18.0 \
+    keras==3.8.0 \
+    tensorflow-hub==0.16.1 \
+    tensorflow-datasets==4.9.7 \
+    tensorflow-io-gcs-filesystem>=0.36.0
+
+# Step 5: re-pin numpy (TF may have upgraded it)
+RUN pip install "numpy==1.26.4" --force-reinstall
+
+# Step 6: JAX with CUDA 12 (Colab ships JAX)
+RUN pip install "jax[cuda12]" || pip install "jax[cpu]"
+
+# Step 7: full requirements
+RUN pip install -r /workspace/colab_env/requirements_full.txt || true
+
+# ── Jupyter ──────────────────────────────────────────────────────────────────
+RUN python -m ipykernel install --sys-prefix \
+    --name colab_mirror --display-name "Python (colab_mirror)"
+
+EXPOSE 8888
+
+CMD ["jupyter", "lab", \
+     "--ip=0.0.0.0", "--port=8888", \
+     "--no-browser", "--allow-root", \
+     "--NotebookApp.token=''", \
+     "--NotebookApp.password=''", \
+     "--notebook-dir=/workspace"]
